@@ -57,6 +57,7 @@ namespace mssql_trigger_listener
         private string connectionStr;
         private database targetDatabase;
         private database database;
+        private int daysRetain = 2;
         private Dictionary<string, Dictionary<string, Dictionary<string, object>>> tableConstructors = new Dictionary<string, Dictionary<string, Dictionary<string, object>>>();
         public mssqlChangeListerner(database database, database targetDatabase)
         {
@@ -71,6 +72,9 @@ namespace mssql_trigger_listener
         public void Start(string[] tableNames, bool isInit = false)
         {
             Console.WriteLine("isInit: " + isInit);
+            var testStr = "daysRetain {daysRetain}";
+            var newTestStr = $@"{testStr}";
+            Console.WriteLine(newTestStr);
             connection.Open();
             try
             {
@@ -166,6 +170,7 @@ namespace mssql_trigger_listener
             {
                 Console.WriteLine(ex.Message);
             }
+            removeLogByDaysRetain(daysRetain);
         }
         private void ListenTriggerForChanges(string tableName,string id)
         {
@@ -749,10 +754,29 @@ namespace mssql_trigger_listener
         {
             Console.WriteLine(DateTime.Now.ToString("MM-dd HH:mm:ss") + " 表格{3}变更通知：类型={0}, 信息={1}, 源={2}", e.Type, e.Info, e.Source, tableName);
             //syncChanged(tableName, getCurrentChangedId(), getLastChangedId(tableName), ListenForChanges(tableName));
+
+            removeLogByDaysRetain(daysRetain);
             _syncChanged(tableName, getLastChangedId(tableName), pkMatcher[tableName][0]);
             ListenChanges(tableName, pkMatcher[tableName]);
         }
-
+        private void removeLogByDaysRetain(int daysRetain)
+        {
+            var query = $@"
+                 DELETE FROM ChangeLog
+                WHERE ChangeTime <= DATEADD(DAY, -{daysRetain}, GETDATE());
+            ";
+            try
+            {
+                using (SqlCommand command = new SqlCommand(query, connection))
+                {
+                    Console.WriteLine(command.ExecuteNonQuery());
+                }
+            }
+            catch (Exception)
+            {
+                Console.WriteLine(daysRetain + " days ChangeLogs has been deleted...");
+            }
+        }
         public void Stop()
         {
             SqlDependency.Stop(connectionStr);

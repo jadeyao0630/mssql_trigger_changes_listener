@@ -112,11 +112,21 @@ namespace mssql_trigger_listener
             SqlDependency.Start(connectionStr);
             //ListenChanges("cb_Cost", "EstimateCost");
             //ListenChanges("ChangeLog", "TableName");
+
             var count = 0;
-            
             foreach (var table in tableNames)
             {
                 copyTableStructure(table);
+                //ListenTriggerForChanges(table, pkMatcher[table][0]);
+                //enabledChangeTracking(table);
+                //ListenForChanges(table);
+                //syncChanged(table, getCurrentChangedId(), getLastChangedId(table), ListenForChanges(table));
+                count++;
+                Console.WriteLine(table + " is synced..." + count + "/" + tableNames.Length);
+            }
+            count = 0;
+            foreach (var table in tableNames)
+            {
                 //ListenTriggerForChanges(table, pkMatcher[table]);
                 //enabledChangeTracking(table);
                 ListenChanges(table, pkMatcher[table]);
@@ -235,46 +245,6 @@ namespace mssql_trigger_listener
 
             }
         }
-        private List<string> ListenForChanges(string tableName)
-        {
-
-            var pks = tableConstructors[tableName]["data"]["pks"] as List<string>;
-            //Console.WriteLine(String.Join(",", pks));
-            /*
-            if (pks.Count == 0 && pkMatcher.ContainsKey(tableName))
-            {
-                pks.Add(pkMatcher[tableName]);
-                setPrimaryKey(tableName, pkMatcher[tableName]);
-            }
-            */
-            if (pks.Count == 0)
-            {
-                Console.WriteLine(tableName + " does not have a primaryKey - " + string.Join(",", pks));
-                return [];
-            }
-            using (SqlCommand command = new SqlCommand($"SELECT {String.Join(",", pks)} FROM dbo." + tableName, connection))
-            {
-                command.CommandType = CommandType.Text;
-                // 创建一个SqlDependency并绑定OnChange事件
-                SqlDependency dependency = new SqlDependency(command);
-                dependency.OnChange += (s, e) => OnDatabaseChange(s, e, tableName);
-
-                // 必须执行命令
-                using (SqlDataReader reader = command.ExecuteReader())
-                {
-                    // 在这里处理数据
-                    /*
-                    while (reader.Read())
-                    {
-                        Console.WriteLine(reader[0]);
-                    }
-                    */
-                    reader.Close();
-                }
-
-            }
-            return pks;
-        }
         private void deleteDatabase(string dbName)
         {
             var query = $"ALTER DATABASE {dbName} SET SINGLE_USER WITH ROLLBACK IMMEDIATE;DROP DATABASE {dbName};";
@@ -350,20 +320,21 @@ namespace mssql_trigger_listener
             bool isInit = lastSyncVersion == -1;
             lastSyncVersion = lastSyncVersion == -1 ? 0 : lastSyncVersion;
 
-                string query = $@"SELECT * FROM ChangeLog WHERE TableName = dbo.{tableName} and Version >= {lastSyncVersion}) ORDER BY Version;";
-
+                string query = $@"SELECT * FROM ChangeLog WHERE TableName = '{tableName}' and Version >= {lastSyncVersion} ORDER BY Version;";
+            Console.WriteLine(query);
                 var command = new SqlCommand(query, connection);
 
                 using (var reader = command.ExecuteReader())
                 {
+                    
                     if (reader.HasRows)
                     {
                         var count = 0;
                         List<Dictionary<string, string>> changedData = new List<Dictionary<string, string>>();
                         while (reader.Read())
                         {
-                            var changeType = reader["SYS_CHANGE_OPERATION"].ToString();
-                            var primaryKey = reader[id].ToString();
+                            var changeType = reader["Action"].ToString();
+                            var primaryKey = reader["Id"].ToString();
                             var pkName = id;
                             Console.WriteLine($"{tableName} Change detected: {changeType} on PrimaryKey: {primaryKey} - {pkName}");
                             changedData.Add(new Dictionary<string, string>() {
@@ -383,7 +354,9 @@ namespace mssql_trigger_listener
                             if (!String.IsNullOrEmpty(data["changeType"]) && !String.IsNullOrEmpty(data["primaryKey"]))
                             {
                                 Console.WriteLine(data["changeType"] + "," + tableName + "," + data["pkName"] + "," + data["primaryKey"] + "," + data["version"] + "," + _count+ "=="+ changedData.Count);
-                                //applyChanges(data["changeType"], tableName, data["pkName"], data["primaryKey"], data["version"], _count == changedData.Count);
+                            //
+                                lastSyncVersion = long.Parse(data["version"]);
+                                applyChanges(data["changeType"], tableName, data["pkName"], data["primaryKey"], data["version"], _count == changedData.Count);
                             }
                         }
                     }
@@ -392,7 +365,8 @@ namespace mssql_trigger_listener
                         if (isInit)
                         {
                             Console.WriteLine("This is no changes in " + tableName + ", set the last change version to ");
-                            //updateLastVersion(tableName, currentVersion.ToString());
+
+                            updateLastVersion(tableName, lastSyncVersion.ToString());
                         }
                     }
 
@@ -466,7 +440,7 @@ namespace mssql_trigger_listener
         private void applyChanges(string changeType, string tableName, string pkName, string primaryKey, string version, bool isLast)
         {
             var query = "";
-            if (changeType == "D")
+            if (changeType == "DELETE")
             {
                 query = $"DELETE FROM dbo.{tableName} WHERE {pkName} = '{primaryKey}'";
             }
@@ -634,11 +608,14 @@ namespace mssql_trigger_listener
                     };
 
                 }
+
+                if (pks.Count > 0) setPrimaryKey(tableName, pks);
+                /*
                 if (pks.Count == 0 && pkMatcher.ContainsKey(tableName))
                 {
                     pks.AddRange(pkMatcher[tableName]);
-                    //setPrimaryKey(tableName, pkMatcher[tableName][0]);
                 }
+                */
                 tableConstructors[tableName]["data"] = new Dictionary<string, object> { { "pks", pks } };
             }
             //if (pks.Count > 0) createTableSql.Append($"PRIMARY KEY ({String.Join(",", pks)})");
@@ -656,7 +633,7 @@ namespace mssql_trigger_listener
             }
             if (getLastChangedId(tableName) == -1)
             {
-                syncAll(tableName);
+                //syncAll(tableName);
                 //updateLastVersion(tableName, getCurrentChangedId().ToString());
 
             }
@@ -753,11 +730,11 @@ namespace mssql_trigger_listener
             }
             return pk;
         }
-        private void setPrimaryKey(string tableName, string key)
+        private void setPrimaryKey(string tableName, List<string> key)
         {
             try
             {
-                using (SqlCommand command = new SqlCommand("ALTER TABLE " + tableName + " ADD PRIMARY KEY (" + key + ");", connection))
+                using (SqlCommand command = new SqlCommand("ALTER TABLE " + tableName + " ADD PRIMARY KEY (" + string.Join(",",key) + ");", connection))
                 {
                     Console.WriteLine(command.ExecuteNonQuery());
                 }
@@ -772,7 +749,7 @@ namespace mssql_trigger_listener
         {
             Console.WriteLine(DateTime.Now.ToString("MM-dd HH:mm:ss") + " 表格{3}变更通知：类型={0}, 信息={1}, 源={2}", e.Type, e.Info, e.Source, tableName);
             //syncChanged(tableName, getCurrentChangedId(), getLastChangedId(tableName), ListenForChanges(tableName));
-            //_syncChanged(tableName, getLastChangedId(tableName), pkMatcher[tableName]);
+            _syncChanged(tableName, getLastChangedId(tableName), pkMatcher[tableName][0]);
             ListenChanges(tableName, pkMatcher[tableName]);
         }
 
